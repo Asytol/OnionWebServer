@@ -1,0 +1,356 @@
+#include <asm-generic/socket.h>
+#include <bits/types/struct_timeval.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <string.h>
+#include <sys/socket.h>
+#include <signal.h>
+
+int SocketFd;
+
+struct sockaddr_in SocketAddress;
+socklen_t AddrLength;
+uint16_t MaxClients = 10;
+int* AcceptedSockets;
+
+uint32_t PostRegisterLength = 0;
+uint32_t PostRegisterElements = 0;
+struct PostReqHandler* PostRegister = NULL;
+
+struct PostReqHandler{
+    int (*handler)(int,char*);
+    char* name;
+};
+
+void Cleanup(int signal){
+    for(int i = 0; i < MaxClients; i++){
+        if (AcceptedSockets[i] != 0){
+            close(AcceptedSockets[i]);
+        }
+    }
+
+    close(SocketFd);
+    exit(signal);
+}
+
+void SendResponse(int ClientFd, char* msg, int ResponseLength){
+
+    if (send(ClientFd,msg,ResponseLength,0) < 0){
+        printf("Failed to send to client\n");
+    }
+}
+
+struct Response {
+    char* Content;
+    size_t ResponseLength;
+};
+
+struct Response CraftResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen){
+    size_t StatusLen = strlen(HttpStatus);
+    size_t DateLen = strlen(Date);
+    size_t ContentTypeLen = strlen(ContentType);
+
+    size_t TotalLen = StatusLen + DateLen + ContentTypeLen + ContentLen + 1;
+
+    struct Response Response = {};
+    Response.Content = malloc(sizeof(char) * TotalLen);
+    Response.ResponseLength = 0;
+
+
+    size_t Header_length = snprintf(Response.Content, TotalLen, 
+        "%s\nDate: %s\nConnection: close\nContent-Length: %d\nContent-Type: %s\n\n", 
+        HttpStatus, Date, (int)ContentLen, ContentType);
+
+    Response.Content = realloc(Response.Content, Header_length + ContentLen);
+    memcpy(Response.Content + Header_length, Content, ContentLen);
+    Response.ResponseLength = Header_length + ContentLen;
+
+    return Response;
+}
+
+struct Page {
+    char* Content;
+    size_t ContentLength;
+};
+
+struct Page ReadPage(char* PageName){
+
+    struct Page ReturnedPage = {};
+    FILE* page;
+
+    printf("PageName: %s|\n",PageName);
+    page = fopen(PageName,"r");
+
+    if (page == NULL){
+        printf("User tired acessing null page\n");
+        return ReadPage("Pages/404Page.html");
+    }
+
+    ReturnedPage.Content = malloc(sizeof(char));
+    ReturnedPage.ContentLength = 0;
+    char buffer[1024] = { 0 };
+    size_t CharacterCount = 0;
+
+    while((CharacterCount = fread(buffer, sizeof(char), 1024, page)) != 0){
+        if (CharacterCount == 0){continue;}
+        ReturnedPage.Content = realloc(ReturnedPage.Content, sizeof(char) * (CharacterCount + ReturnedPage.ContentLength));
+        memcpy(ReturnedPage.Content + ReturnedPage.ContentLength, buffer, CharacterCount);
+
+        ReturnedPage.ContentLength += CharacterCount;
+    }
+
+    return ReturnedPage;
+}
+
+// Get request functions
+// These functions are used when a user gets a certain page, they always look in the "Pages" folder
+// --
+
+char* GetPageAddress(char* UserInfo){
+    char* PageAddress;
+    char* ptr = UserInfo;
+
+    ptr += 4;
+
+    //If the address is null then they go to the main page
+    if (*ptr == '/' && *(ptr + 1) == ' '){
+        PageAddress = malloc(sizeof("Pages/MainPage.html"));
+
+        memcpy(PageAddress,"Pages/MainPage.html",sizeof("Pages/MainPage.html"));
+        return PageAddress;
+    }
+    else{
+        
+        //Non home page
+        uint16_t AddressSize = 0;
+
+        while(*(ptr + AddressSize) != ' '){
+            AddressSize++;
+        }
+
+        //Memory allocates enough for "Pages" and the PageAdress
+        PageAddress = malloc(sizeof("Pages") + AddressSize);
+        memcpy(PageAddress,"Pages",6);
+        strncat(PageAddress + sizeof("Pages") - 2,ptr,AddressSize);
+        PageAddress[sizeof("Pages") + AddressSize] = '\0';
+
+        return  PageAddress;;
+    }
+
+    PageAddress = malloc(sizeof("Pages/404Page.html"));
+
+    memcpy(PageAddress,"Pages/404Page.html",sizeof("Pages/404Page.html"));
+    return PageAddress;
+}
+
+int HandleGetRequest(int ClientFd ,char* UserInfo){
+    char* PageAddress;
+    char* ptr = UserInfo;
+
+    PageAddress = GetPageAddress(UserInfo);
+
+    struct Page Page = ReadPage(PageAddress);  
+    
+    printf("Crafting response\n");
+    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
+
+
+    printf("Sending response\n");
+    SendResponse(ClientFd, Response.Content, Response.ResponseLength);
+
+    free(Page.Content);
+    free(Response.Content);
+
+    return 0;
+}
+
+//End of get request handling
+//
+// --
+
+
+int HandlePostRequest(int ClientFd, char* PostRequest){
+
+    struct PostReqHandler* handler = NULL;
+    char* ptr = PostRequest;
+    ptr += 5;
+    
+    size_t AddressSize = 0;
+    while(*(ptr + AddressSize) != ' '){
+        AddressSize++;
+    }
+
+    char* FunctionName = malloc(AddressSize + 1);
+    memcpy(FunctionName, ptr, AddressSize);
+    FunctionName[AddressSize] = '\0';
+
+    
+
+    for(int i = 0; i < PostRegisterElements; i++){
+        if (strcmp(FunctionName,(PostRegister + i)->name) == 0){
+            handler = (PostRegister + i);
+        }
+    }
+
+    if (handler->handler != NULL){
+        printf("Executing handler: %s\n", handler->name);
+        return handler->handler(ClientFd,PostRequest);
+    }
+
+    return 1;
+} 
+
+int HandlePageInfo(int ClientFd, char* UserInfo){
+
+    char* ptr = UserInfo;
+    char* Page;
+
+    while(*ptr != '\0'){
+        if (strncmp("GET ",ptr,4) == 0){
+            return HandleGetRequest(ClientFd,ptr);
+
+        }
+        else if (strncmp("POST ", ptr, 5) == 0){            
+            return HandlePostRequest(ClientFd,ptr);
+
+        }
+
+        while(*ptr != '\n'){
+            if (*ptr == '\0'){
+                return 1;
+            }
+            ptr++;
+        }
+        ptr++;
+    }
+
+    return 1;
+}
+
+int HandleClient(int ClientFd, char* UserInfo){
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+
+    setsockopt(ClientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    printf("Handling request\n");
+    return HandlePageInfo(ClientFd,UserInfo);
+}
+
+//Listens for incoming connections, if an AcceptedSocket is 0 then it's available
+void Listener(){
+    while(1){
+        
+        int new_socket;
+
+        if ((new_socket = accept(SocketFd,(struct sockaddr* )&SocketAddress,&AddrLength)) < 0){
+            //printf("Error on accepting connection\n");
+        }
+        else{
+            for(int i = 0; i < MaxClients; i++){
+                if (AcceptedSockets[i] == 0){
+
+                    AcceptedSockets[i] = new_socket;
+                    printf("Sucesfully connected user\n");
+
+                    struct timeval timeout;
+                    timeout.tv_sec = 2;
+                    timeout.tv_usec = 0;
+                    char buffer[1024] = { 0 };
+                    setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                    recv(new_socket,buffer,sizeof(buffer) - 1, 0);
+                    
+                    printf("---------------------------------------------------------------\n");
+                    printf("%s\n",buffer);
+                    printf("---------------------------------------------------------------\n");
+
+                    HandleClient(new_socket, buffer);
+                    break;
+                }
+            }
+            //printf("User failed connecting| max capacity\n");
+        }
+    }
+}
+
+int RegisterPost(int (*handler)(int, char*), char* name){
+    if (PostRegister == NULL){
+        PostRegisterLength = 1;
+        PostRegister = malloc(sizeof(struct PostReqHandler)); 
+    }
+
+    if (PostRegisterElements >= PostRegisterLength){
+        PostRegisterLength *= 2;
+        PostRegister = realloc(PostRegister ,sizeof(struct PostReqHandler ) * PostRegisterLength);
+    }
+
+    (PostRegister + PostRegisterElements)->handler = handler;
+    (PostRegister + PostRegisterElements)->name = (char* )malloc(strlen(name) + 1); 
+    memcpy((PostRegister + PostRegisterElements)->name, name, strlen(name) + 1);
+
+    printf("registered: %s\n", (PostRegister + PostRegisterElements)->name);
+    char* ptr = (PostRegister + PostRegisterElements)->name;
+
+    PostRegisterElements++;
+
+    return 0;
+}
+
+int StartServer(){
+    printf("Redirecting stdout to OnionLog.md\n");
+    freopen("OnionLog.md", "a+", stdout);
+
+    printf("Starting server\n");
+    if ((SocketFd = socket(AF_INET,SOCK_STREAM,0)) < 0){
+        printf("Error creating socket\n");
+    }
+    signal(SIGINT,Cleanup);
+    signal(SIGTERM,Cleanup);
+    signal(SIGQUIT,Cleanup);
+    signal(SIGSTOP,Cleanup);
+
+    AcceptedSockets = malloc(sizeof(int) * MaxClients);
+    memset(AcceptedSockets, 0, sizeof(int) * MaxClients);
+
+    SocketAddress.sin_family = AF_INET;
+    SocketAddress.sin_port = htons(80);
+    SocketAddress.sin_addr.s_addr = INADDR_ANY;
+    AddrLength = sizeof(SocketAddress);
+
+    if (bind(SocketFd,(struct sockaddr* )&SocketAddress ,AddrLength) < 0){
+        printf("Error binding socket, port 80 is privileged sudo may be required\n");
+        exit(EXIT_FAILURE);
+    }
+
+
+    if (listen(SocketFd,MaxClients) < 0){
+        printf("Error listening\n");
+        exit(EXIT_FAILURE);
+    }
+
+    //Creating a child that constantly listens --
+    pid_t pid = 0;
+    if ((pid = fork()) < 0){
+        printf("error forking\n");
+        Cleanup(SIGTERM);
+        exit(EXIT_FAILURE);
+    }
+    
+    if (pid == 0){
+        Listener();
+    }
+
+    while(1){
+
+    }
+
+    return 0;
+}
