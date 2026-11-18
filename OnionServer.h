@@ -2,6 +2,10 @@
 #define _OnionServer_H
 #include <stdio.h>
 
+#define CRLF "\r\n"
+#define HTTP_OK "HTTP/1.1 200 OK"
+#define HTTP_NoContent "HTTP/1.1 204 No Content"
+
 void SendResponse(int ClientFd, char* msg, int ResponseLength);
 
 struct Response {
@@ -9,7 +13,7 @@ struct Response {
     size_t ResponseLength;
 };
 
-struct Response CraftResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen);
+struct Response CraftHtmlOkResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen);
 
 struct Page {
     char* Content;

@@ -12,12 +12,12 @@ int test(int ClientFd, char* name, struct PostParamaters Paramaters){
 
     int Status = 200;
 
-    struct Page Page = ReadPage("/");
-
-    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "Date: ", "text/html", Page.Content, Page.ContentLength);
+    struct Response Response = CraftHtmlOkResponse(HTTP_OK, "Sat May 6 21:05:11 PST 2023", "application/json", "{\"ok\":true}", 12);
     
     send(ClientFd,Response.Content,Response.ResponseLength,0);
-    
+
+    //close(ClientFd);
+
     return 0;
 };
 

@@ -56,25 +56,29 @@ struct Response {
     size_t ResponseLength;
 };*/
 
-struct Response CraftResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen){
-    size_t StatusLen = strlen(HttpStatus);
-    size_t DateLen = strlen(Date);
-    size_t ContentTypeLen = strlen(ContentType);
+struct Response CraftHtmlOkResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen){
+    struct Response Response = {0};
 
-    size_t TotalLen = StatusLen + DateLen + ContentTypeLen + ContentLen + 1;
+    size_t Header_length = snprintf(NULL, 0, 
+        "%s\r\nDate: %s\r\nConnection: close\r\nContent-Length: %d\r\nContent-Type: %s\r\n\r\n", 
+        HttpStatus, Date, (int)ContentLen, ContentType);
 
-    struct Response Response = {};
-    Response.Content = malloc(sizeof(char) * TotalLen);
+    if (Header_length < 0){return Response;}
+
+    size_t TotalLen = Header_length + ContentLen + 1;
+
+    Response.Content = malloc(sizeof(char) * TotalLen + 1);
     Response.ResponseLength = 0;
 
-
-    size_t Header_length = snprintf(Response.Content, TotalLen, 
-        "%s\nDate: %s\nConnection: close\nContent-Length: %d\nContent-Type: %s\n\n", 
+    Header_length = snprintf(Response.Content, TotalLen, 
+        "%s\r\nDate: %s\r\nConnection: close\r\nContent-Length: %d\r\nContent-Type: %s\r\n\r\n", 
         HttpStatus, Date, (int)ContentLen, ContentType);
     
-    Response.Content = realloc(Response.Content, Header_length + ContentLen);
+
     memcpy(Response.Content + Header_length, Content, ContentLen);
-    Response.ResponseLength = Header_length + ContentLen;
+    Response.Content[TotalLen] = '\0';
+
+    Response.ResponseLength = TotalLen;
 
     return Response;
 }
@@ -169,7 +173,7 @@ int HandleGetRequest(int ClientFd ,char* UserInfo){
     char* string = ctime(&CurrentTime);
 
     
-    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
+    struct Response Response = CraftHtmlOkResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
 
     printf("Sending response\n");
     SendResponse(ClientFd, Response.Content, Response.ResponseLength);
