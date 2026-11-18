@@ -12,7 +12,9 @@ int test(int ClientFd, char* name, struct PostParamaters Paramaters){
 
     int Status = 200;
 
-    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "Date: ", "text/html", "e", 2);
+    struct Page Page = ReadPage("/");
+
+    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "Date: ", "text/html", Page.Content, Page.ContentLength);
     
     send(ClientFd,Response.Content,Response.ResponseLength,0);
     

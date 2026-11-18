@@ -168,6 +168,7 @@ int HandleGetRequest(int ClientFd ,char* UserInfo){
     time(&CurrentTime); 
     char* string = ctime(&CurrentTime);
 
+    
     struct Response Response = CraftResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
 
     printf("Sending response\n");
