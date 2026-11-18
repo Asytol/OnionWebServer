@@ -2,8 +2,6 @@
 #define _OnionServer_H
 #include <stdio.h>
 
-void Cleanup();
-
 void SendResponse(int ClientFd, char* msg, int ResponseLength);
 
 struct Response {
@@ -18,9 +16,23 @@ struct Page {
     size_t ContentLength;
 };
 
-int RegisterPost(int (*handler)(int, char*), char* name);
-
+//Reads a specific page from Pages section
 struct Page ReadPage(char* PageName);
+
+//The paramaters returned by a post function, having a list of strings and a Paramater amount
+struct PostParamaters {
+    size_t ParamaterAmount;
+    char** Paramaters;
+};
+
+//Registers a post function
+int RegisterPost(int (*handler)(int, char*, struct PostParamaters), char* name);
+
+//The way Paramaters are extracted internally. This is exposed in the library incase you need it. (Requires in the whole client recv, not just the end)
+struct PostParamaters ExtractPostParamaters(char* FullRequest);
+
+//Should almost never be used as the onion client should already free paramaters automatically
+int FreePostParamaters(struct PostParamaters Paramaters);
 
 int StartServer();
 

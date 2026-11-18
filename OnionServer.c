@@ -1,3 +1,4 @@
+#include "OnionServer.h"
 #include <asm-generic/socket.h>
 #include <bits/types/struct_timeval.h>
 
@@ -5,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <time.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -24,8 +26,10 @@ uint32_t PostRegisterLength = 0;
 uint32_t PostRegisterElements = 0;
 struct PostReqHandler* PostRegister = NULL;
 
+//struct PostParamaters;
+
 struct PostReqHandler{
-    int (*handler)(int,char*);
+    int (*handler)(int,char*,struct PostParamaters);
     char* name;
 };
 
@@ -46,11 +50,11 @@ void SendResponse(int ClientFd, char* msg, int ResponseLength){
         printf("Failed to send to client\n");
     }
 }
-
+/*
 struct Response {
     char* Content;
     size_t ResponseLength;
-};
+};*/
 
 struct Response CraftResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen){
     size_t StatusLen = strlen(HttpStatus);
@@ -67,18 +71,18 @@ struct Response CraftResponse(char* HttpStatus, char* Date, char* ContentType, c
     size_t Header_length = snprintf(Response.Content, TotalLen, 
         "%s\nDate: %s\nConnection: close\nContent-Length: %d\nContent-Type: %s\n\n", 
         HttpStatus, Date, (int)ContentLen, ContentType);
-
+    
     Response.Content = realloc(Response.Content, Header_length + ContentLen);
     memcpy(Response.Content + Header_length, Content, ContentLen);
     Response.ResponseLength = Header_length + ContentLen;
 
     return Response;
 }
-
+/*
 struct Page {
     char* Content;
     size_t ContentLength;
-};
+};*/
 
 struct Page ReadPage(char* PageName){
 
@@ -159,14 +163,19 @@ int HandleGetRequest(int ClientFd ,char* UserInfo){
     struct Page Page = ReadPage(PageAddress);  
     
     printf("Crafting response\n");
-    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
 
+    time_t CurrentTime;
+    time(&CurrentTime); 
+    char* string = ctime(&CurrentTime);
+
+    struct Response Response = CraftResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
 
     printf("Sending response\n");
     SendResponse(ClientFd, Response.Content, Response.ResponseLength);
 
     free(Page.Content);
     free(Response.Content);
+    free(PageAddress);
 
     return 0;
 }
@@ -174,7 +183,110 @@ int HandleGetRequest(int ClientFd ,char* UserInfo){
 //End of get request handling
 //
 // --
+/*
+struct PostParamaters {
+    size_t ParamaterAmount;
+    char** Paramaters;
+};*/
 
+int FreePostParamaters(struct PostParamaters Paramaters){
+    if (Paramaters.Paramaters == NULL){
+        printf("Tried freeing null paramaters. Returning..\n");
+        return 1;
+    }
+
+    for(int i = 0; i < Paramaters.ParamaterAmount; i++){
+        
+        if (*(Paramaters.Paramaters) == NULL){
+            printf("Tried freeing a null paramater (string)\n");
+            continue;
+        }
+        free(*(Paramaters.Paramaters + i));
+    }
+
+    free(Paramaters.Paramaters);
+
+    return 0;
+};
+
+int CheckParamaterDistinction(char* string){
+    char* ptr = string;
+
+    if (*ptr != 13){
+        return 1;
+    }
+    ptr++;
+    if (*ptr != 10){
+        return 1;
+    }
+    ptr++;
+    if (*ptr != 13){
+        return 1;
+    }
+    ptr++;
+    if (*ptr != 10){
+        return 1;
+    }
+    ptr++;
+
+    return 0;
+};
+
+struct PostParamaters ExtractPostParamaters(char* FullRequest){
+    char* ptr = FullRequest;
+
+    char* ParamaterString;
+    struct PostParamaters Paramaters = {};
+
+    while(*ptr != '\0'){
+        if (CheckParamaterDistinction(ptr) == 0){
+            ptr += 4;
+            printf("param destinction found\n");
+        }
+
+        ptr++;
+    }
+    //ptr++;
+
+    uint16_t ParamaterAmount = 0; 
+    Paramaters.Paramaters = malloc(sizeof(char* ) * 10);
+    Paramaters.ParamaterAmount = 10;
+
+    printf("Started extracting paramaters\n");
+
+    while(*ptr != '\0'){
+        size_t AddressSize = 0;
+        while(*(ptr + AddressSize) != '&' && *(ptr + AddressSize) != '\0'){
+            AddressSize++;
+        }
+        printf("Address size: %ld\n",AddressSize);
+        if (AddressSize == 0){continue;}
+
+        ParamaterString = malloc(AddressSize + 1);
+        memcpy(ParamaterString, ptr, AddressSize);
+        ParamaterString[AddressSize] = '\0';
+
+        if (ParamaterAmount >= Paramaters.ParamaterAmount){
+            Paramaters.Paramaters = realloc(Paramaters.Paramaters,sizeof(char* ) * Paramaters.ParamaterAmount * 2);
+        }
+        *(Paramaters.Paramaters + ParamaterAmount) = ParamaterString; 
+
+        ParamaterAmount++;
+        ptr += AddressSize;
+        if (*ptr == '\0'){break;}
+        ptr++;
+    } 
+    
+    if (ParamaterAmount == 0){
+        Paramaters.ParamaterAmount = 0;
+        return Paramaters;
+    }
+
+    Paramaters.ParamaterAmount = ParamaterAmount;
+    Paramaters.Paramaters = realloc(Paramaters.Paramaters, sizeof(char* ) * ParamaterAmount);
+
+    return Paramaters;
+}
 
 int HandlePostRequest(int ClientFd, char* PostRequest){
 
@@ -201,7 +313,9 @@ int HandlePostRequest(int ClientFd, char* PostRequest){
 
     if (handler->handler != NULL){
         printf("Executing handler: %s\n", handler->name);
-        return handler->handler(ClientFd,PostRequest);
+        struct PostParamaters Paramaters = ExtractPostParamaters(PostRequest);
+        int ReturnValue = handler->handler(ClientFd,PostRequest, Paramaters);
+        FreePostParamaters(Paramaters);
     }
 
     return 1;
@@ -281,7 +395,7 @@ void Listener(){
     }
 }
 
-int RegisterPost(int (*handler)(int, char*), char* name){
+int RegisterPost(int (*handler)(int, char*, struct PostParamaters), char* name){
     if (PostRegister == NULL){
         PostRegisterLength = 1;
         PostRegister = malloc(sizeof(struct PostReqHandler)); 
@@ -306,7 +420,15 @@ int RegisterPost(int (*handler)(int, char*), char* name){
 
 int StartServer(){
     printf("Redirecting stdout to OnionLog.md\n");
-    freopen("OnionLog.md", "a+", stdout);
+
+    time_t CurrentTime;
+    time(&CurrentTime);
+    printf("Started server at: %s",ctime(&CurrentTime));
+
+    //freopen("OnionLog.md", "a+", stdout);
+
+    printf("__________________________________________________________________\n");
+    printf("Started server at: %s",ctime(&CurrentTime));
 
     printf("Starting server\n");
     if ((SocketFd = socket(AF_INET,SOCK_STREAM,0)) < 0){
@@ -347,6 +469,8 @@ int StartServer(){
     if (pid == 0){
         Listener();
     }
+
+    printf("Server started succesfully. %s\n", ctime(&CurrentTime));
 
     while(1){
 
