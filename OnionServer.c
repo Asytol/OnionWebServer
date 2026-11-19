@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 
 #include <string.h>
+#include <ctype.h>
 #include <sys/socket.h>
 #include <signal.h>
 
@@ -56,12 +57,12 @@ struct Response {
     size_t ResponseLength;
 };*/
 
-struct Response CraftHtmlOkResponse(char* HttpStatus, char* Date, char* ContentType, char* Content, size_t ContentLen){
+struct Response CraftHtmlOkResponse(char* Date, char* ContentType, char* Content, size_t ContentLen){
     struct Response Response = {0};
 
     size_t Header_length = snprintf(NULL, 0, 
         "%s\r\nDate: %s\r\nConnection: close\r\nContent-Length: %d\r\nContent-Type: %s\r\n\r\n", 
-        HttpStatus, Date, (int)ContentLen, ContentType);
+        HTTP_OK, Date, (int)ContentLen, ContentType);
 
     if (Header_length < 0){return Response;}
 
@@ -72,7 +73,7 @@ struct Response CraftHtmlOkResponse(char* HttpStatus, char* Date, char* ContentT
 
     Header_length = snprintf(Response.Content, TotalLen, 
         "%s\r\nDate: %s\r\nConnection: close\r\nContent-Length: %d\r\nContent-Type: %s\r\n\r\n", 
-        HttpStatus, Date, (int)ContentLen, ContentType);
+        HTTP_OK, Date, (int)ContentLen, ContentType);
     
 
     memcpy(Response.Content + Header_length, Content, ContentLen);
@@ -82,11 +83,85 @@ struct Response CraftHtmlOkResponse(char* HttpStatus, char* Date, char* ContentT
 
     return Response;
 }
+
+int SendHtmlNoResponse(int ClientFd){
+    return send(ClientFd,HTTP_NoContent,24,0);
+}
+
 /*
 struct Page {
     char* Content;
     size_t ContentLength;
 };*/
+struct Body GetBodyPosition(char* PageName){
+    struct Body body = {0};
+    FILE* page;
+
+    page = fopen(PageName,"r");
+
+    if (page == NULL){
+        printf("Tried reading null page\n");
+        return body;
+    }
+
+
+    int GetcReturn;
+    size_t CurrentPosition = 0;
+    uint64_t BodyStart = 0;
+    uint64_t BodyEnd = 0;
+
+    while((GetcReturn = fgetc(page)) != EOF){
+        CurrentPosition++;
+        char character = (char)GetcReturn;
+
+        if (character == '<'){
+            char Buffer[6];
+
+            CurrentPosition += fread(Buffer,1,5,page);
+            Buffer[5] = '\0';
+
+            for (int i = 0; i < sizeof(Buffer) - 1; i++){
+                Buffer[i] = tolower(Buffer[i]);
+            }
+
+            if (strncmp(Buffer, "body",sizeof("body") - 1) == 0){
+                while((char)(GetcReturn = fgetc(page)) != '\n'){if (GetcReturn == EOF){fclose(page); return body;}}
+                BodyStart = CurrentPosition + 1;
+            }
+            else if (strncmp(Buffer, "/body", sizeof("/body")) == 0){
+                BodyEnd = CurrentPosition - 6;
+                break;
+            }
+        }
+    }
+
+    body.body_start = BodyStart;
+    body.body_end = BodyEnd;
+
+    fclose(page);
+    return body;
+};
+
+int WriteToPageBody(char* PageName, char* Content, size_t ContentLength){
+    struct Body body = GetBodyPosition(PageName);
+
+    if (body.body_start == 0 || body.body_end == 0 || body.body_start == body.body_end){
+        printf("Body start or body end position is 0 (or equal)\n");
+        return 1;
+    }
+
+    printf("Body start: %d | Body end: %d\n",body.body_start, body.body_end);
+
+    FILE* page = fopen(PageName, "r+");
+
+    fseek(page,body.body_start,SEEK_SET);
+
+    fwrite(Content,sizeof(char),ContentLength,page);
+
+    fclose(page);
+
+    return 0;
+}
 
 struct Page ReadPage(char* PageName){
 
@@ -173,7 +248,7 @@ int HandleGetRequest(int ClientFd ,char* UserInfo){
     char* string = ctime(&CurrentTime);
 
     
-    struct Response Response = CraftHtmlOkResponse("HTTP/1.1 200 OK", "DATE: ", "text/html", Page.Content, Page.ContentLength);
+    struct Response Response = CraftHtmlOkResponse("DATE: ", "text/html", Page.Content, Page.ContentLength);
 
     printf("Sending response\n");
     SendResponse(ClientFd, Response.Content, Response.ResponseLength);
@@ -214,6 +289,21 @@ int FreePostParamaters(struct PostParamaters Paramaters){
     return 0;
 };
 
+size_t CrlfStrlen(char* string){
+    size_t length = 0; 
+    char* ptr = string;
+    
+    while(*(ptr + length) != '\0'){
+        if (*(ptr + length) == '\r'){
+            length++;
+            if (*(ptr + length) == '\n'){return length - 1;}
+        }
+        length++;
+    }
+
+    return length;
+};
+
 int CheckParamaterDistinction(char* string){
     char* ptr = string;
 
@@ -247,6 +337,8 @@ struct PostParamaters ExtractPostParamaters(char* FullRequest){
         if (CheckParamaterDistinction(ptr) == 0){
             ptr += 4;
             printf("param destinction found\n");
+            printf("Ptr: %s\n",ptr);
+            break;
         }
 
         ptr++;
@@ -262,6 +354,7 @@ struct PostParamaters ExtractPostParamaters(char* FullRequest){
     while(*ptr != '\0'){
         size_t AddressSize = 0;
         while(*(ptr + AddressSize) != '&' && *(ptr + AddressSize) != '\0'){
+            if (*(ptr + AddressSize) == '\r' && *(ptr + AddressSize + 1) == '\n'){break;}
             AddressSize++;
         }
         printf("Address size: %ld\n",AddressSize);
