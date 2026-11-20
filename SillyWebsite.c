@@ -13,8 +13,6 @@ int RegisterWholesomeMessage(int ClientFd, char* name, struct PostParamaters Par
 
     int Status = SendHtmlNoResponse(ClientFd);
 
-    close(ClientFd);
-
     return 0;
 };
 

@@ -1,12 +1,22 @@
 #ifndef _OnionServer_H
 #define _OnionServer_H
 #include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #define CRLF "\r\n"
 #define HTML_Continue "HTTP/1.1 100 Continue"
 #define HTTP_OK "HTTP/1.1 200 OK"
 #define HTTP_Created "HTTP/1.1 201 Created"
 #define HTTP_NoContent "HTTP/1.1 204 No Content"
+
+struct Client {
+    int SocketNumber;
+    int FileDescriptor;
+    bool Writing;
+    bool Reading;
+    bool InUse;
+};
 
 void SendResponse(int ClientFd, char* msg, int ResponseLength);
 

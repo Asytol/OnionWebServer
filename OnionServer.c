@@ -1,4 +1,5 @@
 #include "OnionServer.h"
+#include <stdbool.h>
 #include <asm-generic/socket.h>
 #include <bits/types/struct_timeval.h>
 
@@ -10,18 +11,21 @@
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #include <string.h>
 #include <ctype.h>
 #include <sys/socket.h>
 #include <signal.h>
 
+
+
 int SocketFd;
 
 struct sockaddr_in SocketAddress;
 socklen_t AddrLength;
 uint16_t MaxClients = 10;
-int* AcceptedSockets;
+struct Client* AcceptedSockets;
 
 uint32_t PostRegisterLength = 0;
 uint32_t PostRegisterElements = 0;
@@ -36,8 +40,8 @@ struct PostReqHandler{
 
 void Cleanup(int signal){
     for(int i = 0; i < MaxClients; i++){
-        if (AcceptedSockets[i] != 0){
-            close(AcceptedSockets[i]);
+        if (AcceptedSockets[i].FileDescriptor != 0){
+            close(AcceptedSockets[i].FileDescriptor);
         }
     }
 
@@ -50,6 +54,8 @@ void SendResponse(int ClientFd, char* msg, int ResponseLength){
     if (send(ClientFd,msg,ResponseLength,0) < 0){
         printf("Failed to send to client\n");
     }
+
+    printf("Sent response\n");
 }
 /*
 struct Response {
@@ -79,7 +85,7 @@ struct Response CraftHtmlOkResponse(char* Date, char* ContentType, char* Content
     memcpy(Response.Content + Header_length, Content, ContentLen);
     Response.Content[TotalLen] = '\0';
 
-    Response.ResponseLength = TotalLen;
+    Response.ResponseLength = TotalLen + 1;
 
     return Response;
 }
@@ -156,7 +162,26 @@ int WriteToPageBody(char* PageName, char* Content, size_t ContentLength){
 
     fseek(page,body.body_start,SEEK_SET);
 
+    char* RestOfFile = malloc(sizeof(char));
+    size_t RestFileLength = 0;
+    char buffer[1024] = { 0 };
+    size_t CharacterCount = 0;
+
+    while((CharacterCount = fread(buffer, sizeof(char), 1024, page)) != 0){
+        if (CharacterCount == 0){continue;}
+        RestOfFile = realloc(RestOfFile, sizeof(char) * (CharacterCount + RestFileLength));
+        memcpy(RestOfFile + RestFileLength, buffer, CharacterCount);
+
+        RestFileLength += CharacterCount;
+    }
+
+    fseek(page,body.body_start,SEEK_SET);
+
     fwrite(Content,sizeof(char),ContentLength,page);
+    char newline = '\n';
+    fwrite(&newline,sizeof(char),1,page);
+
+    fwrite(RestOfFile,sizeof(char),RestFileLength,page);
 
     fclose(page);
 
@@ -446,49 +471,108 @@ int HandlePageInfo(int ClientFd, char* UserInfo){
     return 1;
 }
 
-int HandleClient(int ClientFd, char* UserInfo){
+int CloseClient(struct Client* client){
+    //Closes the client
+    client->FileDescriptor = 0;
+    client->InUse = false;
+    client->Reading = false;
+    client->Writing = false;
+
+    close(client->FileDescriptor);
+
+    return 0;
+}
+
+struct ClientHandleArgs {
+    struct Client* client;
+    char* UserInfo;
+};
+
+void* HandleClient(void* arg){
+
+    struct ClientHandleArgs* ClientArgs = (struct ClientHandleArgs* )arg;
+
+    struct Client* client = ClientArgs->client;
+    char* UserInfo = ClientArgs->UserInfo;
+
     struct timeval timeout;
     timeout.tv_sec = 2;
     timeout.tv_usec = 0;
 
-    setsockopt(ClientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(client->FileDescriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
     printf("Handling request\n");
-    return HandlePageInfo(ClientFd,UserInfo);
+    int status = HandlePageInfo(client->FileDescriptor,UserInfo);
+
+    CloseClient(client);
+
+    return NULL;
+}
+
+int CheckSocketUse(int ){
+
+}
+
+int CreateSocket(int new_socket){
+    //Iterate through all the sockets that can be opened and check if there are any free
+    //{ -
+    for(int i = 0; i < MaxClients; i++){
+        if (AcceptedSockets[i].FileDescriptor != 0){
+            //Check if the sockets are reading or writing, if not then it's safe to check if they are still open.
+            //{ -
+            if (AcceptedSockets->Reading == false && AcceptedSockets->Writing == false && AcceptedSockets->InUse == false){
+
+                if (read(AcceptedSockets[i].FileDescriptor,NULL,1) == -1){
+                    AcceptedSockets[i].FileDescriptor = 0;
+                    goto AcceptSocket;
+                }
+            }
+        }
+        else{
+            AcceptSocket:
+
+            //If the socket is open then the file descriptor will be assigned
+            AcceptedSockets[i].FileDescriptor = new_socket;
+            AcceptedSockets[i].InUse = true;
+
+            printf("Sucesfully connected user\n");
+
+            struct timeval timeout;
+            timeout.tv_sec = 2;
+            timeout.tv_usec = 0;
+            char buffer[1024] = { 0 };
+            
+            setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            recv(new_socket,buffer,sizeof(buffer) - 1, 0);
+            
+            printf("---------------------------------------------------------------\n");
+            printf("%s\n",buffer);
+            printf("---------------------------------------------------------------\n");
+
+            pthread_t thread;
+            struct ClientHandleArgs Args = {.client = &AcceptedSockets[i], buffer};
+
+            pthread_create(&thread, NULL, HandleClient,&Args);
+
+            break;
+        }
+    }
+
+    return 0;
 }
 
 //Listens for incoming connections, if an AcceptedSocket is 0 then it's available
 void Listener(){
     while(1){
         
-        int new_socket;
+        int new_socket = 0;
 
         if ((new_socket = accept(SocketFd,(struct sockaddr* )&SocketAddress,&AddrLength)) < 0){
             //printf("Error on accepting connection\n");
         }
         else{
-            for(int i = 0; i < MaxClients; i++){
-                if (AcceptedSockets[i] == 0){
-
-                    AcceptedSockets[i] = new_socket;
-                    printf("Sucesfully connected user\n");
-
-                    struct timeval timeout;
-                    timeout.tv_sec = 2;
-                    timeout.tv_usec = 0;
-                    char buffer[1024] = { 0 };
-                    setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-                    recv(new_socket,buffer,sizeof(buffer) - 1, 0);
-                    
-                    printf("---------------------------------------------------------------\n");
-                    printf("%s\n",buffer);
-                    printf("---------------------------------------------------------------\n");
-
-                    HandleClient(new_socket, buffer);
-                    break;
-                }
-            }
-            //printf("User failed connecting| max capacity\n");
+            CreateSocket(new_socket);
+        
         }
     }
 }
@@ -516,30 +600,7 @@ int RegisterPost(int (*handler)(int, char*, struct PostParamaters), char* name){
     return 0;
 }
 
-int StartServer(){
-    printf("Redirecting stdout to OnionLog.md\n");
-
-    time_t CurrentTime;
-    time(&CurrentTime);
-    printf("Started server at: %s",ctime(&CurrentTime));
-
-    //freopen("OnionLog.md", "a+", stdout);
-
-    printf("__________________________________________________________________\n");
-    printf("Started server at: %s",ctime(&CurrentTime));
-
-    printf("Starting server\n");
-    if ((SocketFd = socket(AF_INET,SOCK_STREAM,0)) < 0){
-        printf("Error creating socket\n");
-    }
-    signal(SIGINT,Cleanup);
-    signal(SIGTERM,Cleanup);
-    signal(SIGQUIT,Cleanup);
-    signal(SIGSTOP,Cleanup);
-
-    AcceptedSockets = malloc(sizeof(int) * MaxClients);
-    memset(AcceptedSockets, 0, sizeof(int) * MaxClients);
-
+int StartSocket(){
     SocketAddress.sin_family = AF_INET;
     SocketAddress.sin_port = htons(80);
     SocketAddress.sin_addr.s_addr = INADDR_ANY;
@@ -556,23 +617,49 @@ int StartServer(){
         exit(EXIT_FAILURE);
     }
 
-    //Creating a child that constantly listens --
-    pid_t pid = 0;
-    if ((pid = fork()) < 0){
-        printf("error forking\n");
-        Cleanup(SIGTERM);
-        exit(EXIT_FAILURE);
+    return 0;
+}
+
+int StartServer(){
+    printf("Redirecting stdout to OnionLog.md\n");
+
+    time_t CurrentTime;
+    time(&CurrentTime);
+    printf("Started server at: %s",ctime(&CurrentTime));
+
+    //freopen("OnionLog.md", "a+", stdout);
+
+    printf("__________________________________________________________________\n");
+    printf("Started server at: %s",ctime(&CurrentTime));
+
+    printf("Starting server\n");
+    if ((SocketFd = socket(AF_INET,SOCK_STREAM,0)) < 0){
+        printf("Error creating socket\n");
     }
-    
-    if (pid == 0){
-        Listener();
+
+    //Handling Signals
+    // --
+    signal(SIGINT,Cleanup);
+    signal(SIGTERM,Cleanup);
+    signal(SIGQUIT,Cleanup);
+    signal(SIGSTOP,Cleanup);
+    // --
+    // -----
+
+    AcceptedSockets = malloc(sizeof(struct Client) * MaxClients);
+    for(int i = 0; i < MaxClients; i++){
+        AcceptedSockets[i].FileDescriptor = 0;
+        AcceptedSockets[i].InUse = 0;
+        AcceptedSockets[i].Reading = 0;
+        AcceptedSockets[i].Writing = 0;
+        AcceptedSockets[i].SocketNumber = i; 
     }
+
+    StartSocket();
 
     printf("Server started succesfully. %s\n", ctime(&CurrentTime));
-
-    while(1){
-
-    }
+    
+    Listener();
 
     return 0;
 }
